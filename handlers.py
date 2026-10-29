@@ -649,3 +649,225 @@ async def send_buypl_card(update, context, card, user_id):
                 reply_markup=keyboard,
                 parse_mode=ParseMode.HTML,
             )
+
+
+
+#===== BET PATTERNS =====
+
+BET_PATTERNS = [
+    "HTHTHTH", "THTHTHT", "HHTTHHT", "TTHHTTH", "HHHTTTH",
+    "TTTHHHT", "HTTHHTT", "THHTTHH", "HHTHTTH", "TTHTHHT",
+    "HTHHTHT", "THTTHTH", "HHHHTTT", "TTTTHHH", "HTTTHHH",
+    "THHHTTT", "HHTTTHH", "TTHHHTT", "HTHTTHH", "THTHHTT",
+    "HHTHHTT", "TTHTTHH", "HTTHTHH", "THHTHTT", "HHHTHTT",
+    "TTTHTHH", "HTHHHTT", "THTTTHH", "HHTHTHT", "TTHTHTH",
+    "HTTTTHH", "THHHHTT", "HHTTHTH", "TTHHTHT", "HTHTTTH",
+    "THTHHHT", "HHHTHHT", "TTTHTTH", "HTHHTTH", "THTTHHT",
+    "HHTHTTT", "TTHTHHH", "HTTHHHT", "THHTTTH", "HHHHHTT",
+    "TTTTTHH", "HTHTHHT", "THTHTTH", "HHTTTTH", "TTHHHHT"
+]
+
+
+#===== BET COMMAND =====
+
+async def bett_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.effective_message
+    user = update.effective_user
+
+    if message is None or user is None:
+        return
+
+    #===== CHECK ARGUMENTS =====
+
+    if len(context.args) != 2:
+        await message.reply_text(
+            "<b>🎲 Head / Tail Betting</b>\n\n"
+            "Usage:\n"
+            "<code>/bett h 100</code>\n"
+            "<code>/bett 100 heads</code>\n\n"
+            "Choices: <code>h</code>, <code>head</code>, "
+            "<code>heads</code>, <code>t</code>, "
+            "<code>tail</code>, <code>tails</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    #===== PARSE BET =====
+
+    choices = {
+        "h": "H",
+        "head": "H",
+        "heads": "H",
+        "t": "T",
+        "tail": "T",
+        "tails": "T"
+    }
+
+    first = context.args[0].casefold()
+    second = context.args[1].casefold()
+
+    if first in choices:
+        choice = choices[first]
+        amount_text = context.args[1]
+    elif second in choices:
+        choice = choices[second]
+        amount_text = context.args[0]
+    else:
+        await message.reply_text(
+            "❌ <b>Invalid choice!</b>\n"
+            "Choose Heads or Tails.",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    #===== VALIDATE AMOUNT =====
+
+    try:
+        amount = int(amount_text)
+    except ValueError:
+        await message.reply_text(
+            "❌ <b>Bet amount must be a whole number.</b>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    if amount <= 0:
+        await message.reply_text(
+            "❌ <b>Bet amount must be greater than zero.</b>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    #===== LOAD USER DATA =====
+
+    users = load_users()
+    user_id = str(user.id)
+
+    if user_id not in users:
+        get_user_record(user)
+        users = load_users()
+
+    record = users[user_id]
+
+    #===== CURRENT GAME DAY (IST) =====
+
+    now = datetime.now(IST)
+    game_day = (now - timedelta(hours=4)).date().isoformat()
+
+    #===== RESET DAILY LIMITS =====
+
+    if record.get("bet_game_day") != game_day:
+        record["bet_game_day"] = game_day
+        record["bet_daily_count"] = 0
+        record["bet_daily_earnings"] = 0
+        record["bet_pattern"] = random.choice(BET_PATTERNS)
+        record["bet_pattern_position"] = 0
+
+    bet_count = int(record.get("bet_daily_count", 0))
+    earnings = int(record.get("bet_daily_earnings", 0))
+
+    #===== CHECK BET LIMIT =====
+
+    if bet_count >= 30:
+        await message.reply_text(
+            "❌ <b>You have used all 30 bets today!</b>\n"
+            "🕓 Come back after <b>4:00 AM IST.</b>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    #===== CHECK EARNING LIMIT =====
+
+    earning_limit = 100000
+    remaining_earnings = earning_limit - earnings
+
+    if remaining_earnings <= 0:
+        await message.reply_text(
+            "🏆 <b>You have reached today's earning limit!</b>\n"
+            "🕓 Come back after <b>4:00 AM IST.</b>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    if amount > remaining_earnings:
+        await message.reply_text(
+            "⚠️ <b>Bet exceeds your remaining daily earning limit.</b>\n\n"
+            f"💰 Remaining earning capacity: "
+            f"<b>{remaining_earnings:,}🪙</b>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    #===== CHECK BALANCE =====
+
+    balance = int(record.get("jnventory", 0))
+
+    if balance < amount:
+        await message.reply_text(
+            "❌ <b>Insufficient coins!</b>\n\n"
+            f"💰 Balance: <b>{balance:,}🪙</b>\n"
+            f"🎲 Bet: <b>{amount:,}🪙</b>",
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    #===== GET PATTERN OUTCOME =====
+
+    pattern = record.get("bet_pattern")
+    position = int(record.get("bet_pattern_position", 0))
+
+    if not pattern or len(pattern) != 7 or not 0 <= position < 7:
+        pattern = random.choice(BET_PATTERNS)
+        position = 0
+
+    outcome = pattern[position]
+
+    #===== ADVANCE PATTERN =====
+
+    position += 1
+
+    if position >= 7:
+        record["bet_pattern"] = random.choice(BET_PATTERNS)
+        record["bet_pattern_position"] = 0
+    else:
+        record["bet_pattern"] = pattern
+        record["bet_pattern_position"] = position
+
+    #===== CALCULATE RESULT =====
+
+    bet_count += 1
+
+    if choice == outcome:
+        # 2x total return: original stake plus equal net winnings.
+        balance += amount
+        earnings += amount
+        result_line = f"🟢 <b>You won!</b> +{amount:,}🪙 🎉"
+    else:
+        balance -= amount
+        result_line = f"🔴 <b>You lost!</b> -{amount:,}🪙 💸"
+
+    #===== SAVE RESULT =====
+
+    record["jnventory"] = balance
+    record["bet_daily_count"] = bet_count
+    record["bet_daily_earnings"] = earnings
+    users[user_id] = record
+    save_users(users)
+
+    #===== RESULT MESSAGE =====
+
+    choice_name = "Heads" if choice == "H" else "Tails"
+    outcome_name = "Heads" if outcome == "H" else "Tails"
+    outcome_icon = "⬆️" if outcome == "H" else "⬇️"
+
+    await message.reply_text(
+        "🎲 <b>Coin Flip Result</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"You chose: <b>{choice_name}</b>\n"
+        f"Result: {outcome_icon} <b>{outcome_name}</b>\n\n"
+        f"{result_line}\n\n"
+        f"💰 Balance: <b>{balance:,}🪙</b>\n"
+        f"🎯 Bets used today: <b>{bet_count}/30</b>",
+        parse_mode=ParseMode.HTML
+    )
+    

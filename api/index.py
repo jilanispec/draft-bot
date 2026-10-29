@@ -29,6 +29,17 @@ from callback import (
 )
 
 
+telegram_app.add_handler(
+    CallbackQueryHandler(mycard_callback, pattern=r"^mc:")
+)
+telegram_app.add_handler(
+    CallbackQueryHandler(open_pack_callback, pattern=r"^open_pack$")
+)
+telegram_app.add_handler(
+    CallbackQueryHandler(buypl_callback, pattern=r"^buypl:")
+)
+
+
 #===CHECK====
 
 import callback

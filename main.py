@@ -14,6 +14,7 @@ from handlers import (
     mycard_command,
     buypl_command,
     bett_command,
+    tohfa_command,
 )
 from callback import (
     open_pack_callback,
@@ -67,7 +68,9 @@ def main():
     application.add_handler(CommandHandler("mycard", mycard_command))
     application.add_handler(CommandHandler("buypl", buypl_command))
     application.add_handler(CommandHandler("bett", bett_command))
-
+    application.add_handler(
+    CommandHandler("tohfa", tohfa_command)
+    )
     # Callbacks
     application.add_handler(
         CallbackQueryHandler(mycard_callback, pattern=r"^mc:")

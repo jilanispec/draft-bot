@@ -1,10 +1,9 @@
-
-#===== IMPORTS =====
+# ===== IMPORTS =====
 import os
 import hmac
 import logging
-import callback
 
+import callback
 
 from fastapi import FastAPI, Request, HTTPException
 from telegram import Update
@@ -23,30 +22,11 @@ from handlers import (
     buypl_command,
 )
 
-
-from callback import (
-    open_pack_callback,
-    mycard_callback,
-    buypl_callback,
-)
-
-
-telegram_app.add_handler(
-    CallbackQueryHandler(mycard_callback, pattern=r"^mc:")
-)
-telegram_app.add_handler(
-    CallbackQueryHandler(open_pack_callback, pattern=r"^open_pack$")
-)
-telegram_app.add_handler(
-    CallbackQueryHandler(buypl_callback, pattern=r"^buypl:")
-)
-
-
-#===== LOGGING =====
+# ===== LOGGING =====
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
-#===== ENVIRONMENT VARIABLES =====
+# ===== ENVIRONMENT VARIABLES =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET")
 
@@ -58,15 +38,41 @@ if not WEBHOOK_SECRET:
         "TELEGRAM_WEBHOOK_SECRET environment variable is missing."
     )
 
-#===== FASTAPI =====
+# ===== FASTAPI =====
 app = FastAPI()
 
-#===== TELEGRAM APPLICATION =====
+# ===== TELEGRAM APPLICATION =====
 telegram_app = Application.builder().token(BOT_TOKEN).build()
 
+# ===== COMMAND HANDLERS =====
+telegram_app.add_handler(CommandHandler("start", start_command))
+telegram_app.add_handler(CommandHandler("jnventory", jnventory_command))
+telegram_app.add_handler(CommandHandler("clain", clain_command))
+telegram_app.add_handler(CommandHandler("ggjve", ggjve_command))
+telegram_app.add_handler(CommandHandler("mycard", mycard_command))
+telegram_app.add_handler(CommandHandler("buypl", buypl_command))
 
+# ===== CALLBACK HANDLERS =====
+telegram_app.add_handler(
+    CallbackQueryHandler(
+        callback.mycard_callback,
+        pattern=r"^mc:",
+    )
+)
+telegram_app.add_handler(
+    CallbackQueryHandler(
+        callback.open_pack_callback,
+        pattern=r"^open_pack$",
+    )
+)
+telegram_app.add_handler(
+    CallbackQueryHandler(
+        callback.buypl_callback,
+        pattern=r"^buypl:",
+    )
+)
 
-#===== WEBHOOK ENDPOINT =====
+# ===== WEBHOOK ENDPOINT =====
 @app.post("/")
 @app.post("/api")
 async def telegram_webhook(request: Request):

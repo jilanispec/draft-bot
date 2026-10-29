@@ -50,7 +50,8 @@ def load_users():
         raise ValueError("users.json must contain a JSON object")
 
     return data
-
+print("USERS FILE PATH:", USERS_FILE)
+print("USERS FILE EXISTS:", USERS_FILE.exists())
 
 #===== SAVE USERS =====
 def save_users(users):

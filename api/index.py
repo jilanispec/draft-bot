@@ -21,6 +21,14 @@ from handlers import (
     buypl_command,
 )
 
+
+from callback import (
+    open_pack_callback,
+    mycard_callback,
+    buypl_callback,
+)
+
+
 #===CHECK====
 
 import callback

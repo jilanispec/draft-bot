@@ -1,6 +1,7 @@
 
 #===== IMPORTS =====
 import random
+import os
 import json
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -28,9 +29,13 @@ if not CARDS_FILE.exists():
     CARDS_FILE = BASE_DIR / "cards.json"
 
 #===== USER DATA =====
-# NOTE: /tmp is temporary on Vercel.
-USERS_FILE = Path("/tmp/users.json")
-TEMP_USERS_FILE = Path("/tmp/users.tmp")
+DATA_DIR = Path(
+    os.environ.get("DATA_DIR", str(Path(__file__).resolve().parent / "data"))
+)
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+USERS_FILE = DATA_DIR / "users.json"
+TEMP_USERS_FILE = DATA_DIR / "users.tmp"
 
 
 #===== LOAD USERS =====
@@ -389,6 +394,137 @@ async def ggjve_command(
         parse_mode=ParseMode.HTML,
     )
 
+
+
+#===== ADMIN TOHFA COMMAND =====
+TOHFA_ADMIN_IDS = {2079655933}
+
+
+async def tohfa_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    message = update.effective_message
+    admin = update.effective_user
+
+    if message is None or admin is None:
+        return
+
+    # Only approved admin IDs can use this command
+    if admin.id not in TOHFA_ADMIN_IDS:
+        await message.reply_text("⛔ You are not authorized to use /tohfa.")
+        return
+
+    # Usage: /tohfa <amount> (reply)
+    #        /tohfa <amount> <telegram_user_id>
+    if len(context.args) not in (1, 2):
+        await message.reply_text(
+            "🎁 Usage:\n"
+            "• Reply to a user's message: /tohfa <amount>\n"
+            "• By Telegram ID: /tohfa <amount> <user_id>"
+        )
+        return
+
+    # Validate amount
+    try:
+        amount = int(context.args[0])
+    except ValueError:
+        await message.reply_text("❌ Amount must be a whole number.")
+        return
+
+    if amount <= 0:
+        await message.reply_text("❌ Amount must be greater than zero.")
+        return
+
+    # Identify recipient
+    recipient = None
+
+    if len(context.args) == 2:
+        try:
+            recipient_id = int(context.args[1])
+            if recipient_id <= 0:
+                raise ValueError
+        except ValueError:
+            await message.reply_text("❌ Invalid Telegram user ID.")
+            return
+    else:
+        replied = message.reply_to_message
+        if replied is None or replied.from_user is None:
+            await message.reply_text(
+                "❌ Reply to the user's message, or provide their Telegram ID.\n"
+                "Example: /tohfa 5000 123456789"
+            )
+            return
+
+        recipient = replied.from_user
+
+        if recipient.is_bot:
+            await message.reply_text("❌ You cannot gift coins to a bot.")
+            return
+
+        recipient_id = recipient.id
+
+    # Load current user data
+    try:
+        users = load_users()
+    except (OSError, ValueError):
+        await message.reply_text("❌ Could not load user data.")
+        return
+
+    key = str(recipient_id)
+
+    # Create a record if this ID is not in the database yet
+    if key not in users:
+        users[key] = {
+            "first_name": (
+                recipient.first_name if recipient else f"User {recipient_id}"
+            ),
+            "id": recipient_id,
+            "username": recipient.username if recipient else None,
+            "jnventory": 0,
+            "cards": [],
+            "total_packs": 0,
+            "last_claim_day": None,
+            "claim_streak": 0,
+            "last_bonus_streak": 0,
+        }
+    else:
+        users[key].setdefault("jnventory", 0)
+        users[key].setdefault("cards", [])
+        users[key].setdefault("total_packs", 0)
+        users[key].setdefault("last_claim_day", None)
+        users[key].setdefault("claim_streak", 0)
+        users[key].setdefault("last_bonus_streak", 0)
+
+        if recipient:
+            users[key]["first_name"] = recipient.first_name
+            users[key]["username"] = recipient.username
+
+    # Add coins without deducting from the admin
+    try:
+        old_balance = int(users[key]["jnventory"])
+        if old_balance < 0:
+            raise ValueError
+        new_balance = old_balance + amount
+        users[key]["jnventory"] = new_balance
+        save_users(users)
+    except (OSError, ValueError, TypeError):
+        await message.reply_text("❌ Could not update the user's coin balance.")
+        return
+
+    display_name = (
+        recipient.first_name if recipient else f"User ID {recipient_id}"
+    )
+
+    await message.reply_text(
+        "🎁 <b>Tohfa Sent Successfully!</b>\n\n"
+        f"👤 Recipient: <b>{escape(display_name)}</b>\n"
+        f"🆔 Telegram ID: <code>{recipient_id}</code>\n"
+        f"💰 Coins gifted: <b>+{amount:,} 🪙</b>\n"
+        f"💳 New balance: <b>{new_balance:,} 🪙</b>",
+        parse_mode=ParseMode.HTML,
+    )
+    
 
 #===== MY CARD COMMAND =====
 async def mycard_command(

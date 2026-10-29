@@ -40,17 +40,6 @@ telegram_app.add_handler(
 )
 
 
-#===CHECK====
-
-import callback
-
-print("CALLBACK MODULE:", callback.__file__)
-print("OPEN PACK EXISTS:", hasattr(callback, "open_pack_callback"))
-print("CALLBACK FUNCTIONS:", [
-    name for name in dir(callback)
-    if name.endswith("_callback")
-])
-
 #===== LOGGING =====
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)

@@ -1,0 +1,651 @@
+
+#===== IMPORTS =====
+import json
+from pathlib import Path
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+from html import escape
+
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ContextTypes
+from telegram.constants import ParseMode
+from telegram.error import BadRequest
+
+
+#===== TIMEZONE =====
+IST = ZoneInfo("Asia/Kolkata")
+
+
+#===== DATA FILES =====
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR / "data"
+
+#===== CARD DATABASE =====
+CARDS_FILE = DATA_DIR / "cards.json"
+
+if not CARDS_FILE.exists():
+    CARDS_FILE = BASE_DIR / "cards.json"
+
+#===== USER DATA =====
+# NOTE: /tmp is temporary on Vercel.
+USERS_FILE = Path("/tmp/users.json")
+TEMP_USERS_FILE = Path("/tmp/users.tmp")
+
+
+#===== LOAD USERS =====
+def load_users():
+    if not USERS_FILE.exists():
+        return {}
+
+    with USERS_FILE.open("r", encoding="utf-8") as file:
+        data = json.load(file)
+
+    if not isinstance(data, dict):
+        raise ValueError("users.json must contain a JSON object")
+
+    return data
+
+
+#===== SAVE USERS =====
+def save_users(users):
+    with TEMP_USERS_FILE.open("w", encoding="utf-8") as file:
+        json.dump(
+            users,
+            file,
+            indent=4,
+            ensure_ascii=False,
+        )
+        file.flush()
+
+    TEMP_USERS_FILE.replace(USERS_FILE)
+
+
+#===== GET USER RECORD =====
+def get_user_record(user):
+    users = load_users()
+    user_id = str(user.id)
+
+    if user_id not in users:
+        users[user_id] = {
+            "first_name": user.first_name,
+            "id": user.id,
+            "username": user.username,
+            "jnventory": 0,
+            "cards": [],
+            "total_packs": 0,
+            "last_claim_day": None,
+            "claim_streak": 0,
+            "last_bonus_streak": 0,
+        }
+    else:
+        record = users[user_id]
+        record["first_name"] = user.first_name
+        record["username"] = user.username
+
+        record.setdefault("jnventory", 0)
+        record.setdefault("cards", [])
+        record.setdefault("total_packs", 0)
+        record.setdefault("last_claim_day", None)
+        record.setdefault("claim_streak", 0)
+        record.setdefault("last_bonus_streak", 0)
+
+    save_users(users)
+    return users[user_id]
+
+
+#===== START COMMAND =====
+async def start_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    message = update.effective_message
+    user = update.effective_user
+
+    if message is None or user is None:
+        return
+
+    get_user_record(user)
+
+    await message.reply_text(
+        "<b>🏏 Welcome to Cricket Card Bot!</b>\n\n"
+        "Your account is ready!\n\n"
+        "💰 Use /jnventory to view your inventory.\n"
+        "🎁 Use /clain to claim your daily coins.\n"
+        "🃏 Use /mycard to view your collection.\n"
+        "🛒 Use /buypl PLAYER NAME to find a player.",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+#===== INVENTORY COMMAND =====
+async def jnventory_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    message = update.effective_message
+    user = update.effective_user
+
+    if message is None or user is None:
+        return
+
+    record = get_user_record(user)
+    coins = int(record.get("jnventory", 0))
+    total_packs = int(record.get("total_packs", 0))
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "📦 Open pack",
+                callback_data="open_pack",
+            )
+        ]
+    ])
+
+    await message.reply_text(
+        "<b>💼 Your Inventory</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"💰 Card Coins: <b>{coins:,}</b>🪙\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"📦 Total Packs: <b>{total_packs}</b>\n"
+        "━━━━━━━━━━━━━━━━━━",
+        reply_markup=keyboard,
+        parse_mode=ParseMode.HTML,
+    )
+
+
+#===== DAILY CLAIM COMMAND =====
+async def clain_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    message = update.effective_message
+    user = update.effective_user
+
+    if message is None or user is None:
+        return
+
+    users = load_users()
+    user_id = str(user.id)
+
+    if user_id not in users:
+        get_user_record(user)
+        users = load_users()
+
+    record = users[user_id]
+
+    #===== CLAIM DAY STARTS AT 4 AM IST =====
+    now = datetime.now(IST)
+    claim_date = (now - timedelta(hours=4)).date().isoformat()
+    last_claim_day = record.get("last_claim_day")
+
+    if last_claim_day == claim_date:
+        await message.reply_text(
+            "<b>⏳ You have already claimed your daily coins!</b>\n\n"
+            "🕓 Your next claim starts at <b>4:00 AM IST.</b>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    #===== STREAK =====
+    yesterday = (
+        datetime.fromisoformat(claim_date).date()
+        - timedelta(days=1)
+    ).isoformat()
+
+    if last_claim_day == yesterday:
+        record["claim_streak"] = int(
+            record.get("claim_streak", 0)
+        ) + 1
+    else:
+        record["claim_streak"] = 1
+        record["last_bonus_streak"] = 0
+
+    #===== DAILY REWARD =====
+    daily_reward = 10000
+    record["jnventory"] = int(
+        record.get("jnventory", 0)
+    ) + daily_reward
+
+    streak = record["claim_streak"]
+    bonus = 0
+
+    #===== SEVEN-DAY BONUS =====
+    if streak > 0 and streak % 7 == 0:
+        last_bonus = int(record.get("last_bonus_streak", 0))
+
+        if last_bonus < streak:
+            bonus = 50000
+            record["jnventory"] += bonus
+            record["last_bonus_streak"] = streak
+
+    #===== SAVE CLAIM =====
+    record["last_claim_day"] = claim_date
+    users[user_id] = record
+    save_users(users)
+
+    bonus_message = (
+        "\n\n🎉 <b>7-Day Streak Bonus:</b> +50,000🪙"
+        if bonus else ""
+    )
+
+    await message.reply_text(
+        "<b>🎁 Daily Claim Successful!</b>\n\n"
+        f"💰 Daily Reward: <b>+{daily_reward:,}</b>🪙\n"
+        f"🔥 Current Streak: <b>{streak} day(s)</b>"
+        f"{bonus_message}\n\n"
+        f"💳 Current Balance: "
+        f"<b>{record['jnventory']:,}</b>🪙",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+#===== GIVE COINS COMMAND =====
+async def ggjve_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    message = update.effective_message
+    sender = update.effective_user
+
+    if message is None or sender is None:
+        return
+
+    #===== REPLY MODE =====
+    if not message.reply_to_message:
+        await message.reply_text(
+            "<b>💸 Reply to the target user's message and use:</b>\n\n"
+            "<code>/ggjve &lt;amount&gt;</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    recipient = message.reply_to_message.from_user
+
+    if recipient is None:
+        await message.reply_text(
+            "❌ <b>Could not identify the recipient.</b>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    if recipient.is_bot:
+        await message.reply_text(
+            "❌ <b>You cannot send coins to a bot.</b>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    if recipient.id == sender.id:
+        await message.reply_text(
+            "❌ <b>You cannot send coins to yourself.</b>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    #===== VALIDATE AMOUNT =====
+    if len(context.args) != 1:
+        await message.reply_text(
+            "❌ <b>Invalid amount.</b>\n"
+            "Usage: <code>/ggjve &lt;amount&gt;</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    try:
+        amount = int(context.args[0])
+    except ValueError:
+        await message.reply_text(
+            "❌ <b>Amount must be a whole number.</b>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    if amount <= 0:
+        await message.reply_text(
+            "❌ <b>Amount must be greater than zero.</b>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    #===== LOAD USERS =====
+    users = load_users()
+    sender_id = str(sender.id)
+    recipient_id = str(recipient.id)
+
+    if sender_id not in users:
+        get_user_record(sender)
+        users = load_users()
+
+    #===== CREATE RECIPIENT RECORD =====
+    if recipient_id not in users:
+        users[recipient_id] = {
+            "first_name": recipient.first_name,
+            "id": recipient.id,
+            "username": recipient.username,
+            "jnventory": 0,
+            "cards": [],
+            "total_packs": 0,
+            "last_claim_day": None,
+            "claim_streak": 0,
+            "last_bonus_streak": 0,
+        }
+    else:
+        recipient_record = users[recipient_id]
+        recipient_record["first_name"] = recipient.first_name
+        recipient_record["username"] = recipient.username
+        recipient_record.setdefault("jnventory", 0)
+        recipient_record.setdefault("cards", [])
+        recipient_record.setdefault("total_packs", 0)
+        recipient_record.setdefault("last_claim_day", None)
+        recipient_record.setdefault("claim_streak", 0)
+        recipient_record.setdefault("last_bonus_streak", 0)
+
+    #===== CHECK BALANCES =====
+    sender_record = users[sender_id]
+
+    try:
+        sender_balance = int(sender_record.get("jnventory", 0))
+        recipient_balance = int(
+            users[recipient_id].get("jnventory", 0)
+        )
+    except (TypeError, ValueError):
+        await message.reply_text(
+            "❌ <b>Could not read a user's coin balance.</b>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    if sender_balance < amount:
+        await message.reply_text(
+            "❌ <b>Insufficient coins!</b>\n\n"
+            f"💰 Your balance: <b>{sender_balance:,}🪙</b>\n"
+            f"💸 Transfer amount: <b>{amount:,}🪙</b>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    #===== TRANSFER =====
+    sender_record["jnventory"] = sender_balance - amount
+    users[recipient_id]["jnventory"] = recipient_balance + amount
+
+    #===== SAVE =====
+    try:
+        save_users(users)
+    except (OSError, ValueError):
+        await message.reply_text(
+            "❌ <b>Transfer failed: could not save user data.</b>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    #===== SUCCESS =====
+    await message.reply_text(
+        "✅ <b>Coin Transfer Successful!</b>\n\n"
+        f"👤 Recipient: <b>{escape(recipient.first_name)}</b>\n"
+        f"💸 Sent: <b>{amount:,}🪙</b>\n\n"
+        f"💰 Your balance: "
+        f"<b>{sender_record['jnventory']:,}🪙</b>",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+#===== MY CARD COMMAND =====
+async def mycard_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    from callback import show_my_cards
+
+    user = update.effective_user
+
+    if user is None or update.effective_message is None:
+        return
+
+    get_user_record(user)
+
+    await show_my_cards(
+        update=update,
+        context=context,
+        user_id=user.id,
+        page=0,
+        edit=False,
+        category="all",
+    )
+
+
+#===== BUY PLAYER COMMAND =====
+async def buypl_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+    message = update.effective_message
+    user = update.effective_user
+
+    if message is None or user is None:
+        return
+
+    if not context.args:
+        await message.reply_text(
+            "<b>🛒 Buy Player</b>\n\n"
+            "Usage: <code>/buypl PLAYER NAME</code>\n\n"
+            "Example: <code>/buypl Virat Kohli</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    search_name = " ".join(context.args).strip().casefold()
+
+    #===== LOAD PLAYER DATABASE =====
+    try:
+        with CARDS_FILE.open("r", encoding="utf-8") as file:
+            data = json.load(file)
+
+        if isinstance(data, dict):
+            cards = list(data.values())
+        elif isinstance(data, list):
+            cards = data
+        else:
+            cards = []
+
+    except (OSError, json.JSONDecodeError):
+        await message.reply_text(
+            "❌ <b>Could not load the player database.</b>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    #===== SEARCH PLAYERS =====
+    matches = [
+        card for card in cards
+        if isinstance(card, dict)
+        and search_name in str(card.get("name", "")).casefold()
+    ]
+
+    if not matches:
+        await message.reply_text(
+            f"❌ No players found for "
+            f"<b>“{escape(' '.join(context.args))}”</b>.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    #===== GROUP BY PLAYER NAME =====
+    players = {}
+
+    for card in matches:
+        name = str(card.get("name", "")).strip()
+
+        if name:
+            players.setdefault(
+                name.casefold(),
+                {"name": name, "cards": []},
+            )
+            players[name.casefold()]["cards"].append(card)
+
+    if len(players) > 1:
+        lines = [
+            "<b>🔎 Multiple players found.</b>",
+            "",
+            "Run the command again with the full name:",
+            "",
+        ]
+
+        for player in list(players.values())[:20]:
+            lines.append(
+                f"• <code>/buypl {escape(player['name'])}</code>"
+            )
+
+        await message.reply_text(
+            "\n".join(lines),
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    player = next(iter(players.values()))
+    player_cards = player["cards"]
+
+    #===== GROUP BY FORMAT =====
+    formats = {}
+
+    for card in player_cards:
+        fmt = str(card.get("format", "Unknown"))
+        formats.setdefault(
+            fmt.casefold(),
+            {"format": fmt, "card": card},
+        )
+
+    if len(formats) > 1:
+        buttons = []
+
+        for item in formats.values():
+            card = item["card"]
+            fmt = item["format"]
+            card_id = card.get("id")
+
+            if card_id is None:
+                continue
+
+            buttons.append(
+                InlineKeyboardButton(
+                    fmt.upper(),
+                    callback_data=f"buypl:{user.id}:format:{card_id}",
+                )
+            )
+
+        if not buttons:
+            await message.reply_text(
+                "❌ Player format data is incomplete."
+            )
+            return
+
+        keyboard = InlineKeyboardMarkup([
+            buttons[i:i + 3]
+            for i in range(0, len(buttons), 3)
+        ])
+
+        await message.reply_text(
+            f"<b>📛 {escape(player['name'])} ⭐</b>\n\n"
+            "Different formats are available.\n"
+            "Choose a format:",
+            reply_markup=keyboard,
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    #===== SHOW PLAYER =====
+    card = next(iter(formats.values()))["card"]
+
+    await send_buypl_card(
+        update,
+        context,
+        card,
+        user.id,
+    )
+
+
+#===== SEND PLAYER CARD =====
+async def send_buypl_card(update, context, card, user_id):
+    users = load_users()
+    record = users.get(str(user_id), {})
+
+    owned_cards = record.get("cards", [])
+    card_id = card.get("id")
+
+    is_owned = any(
+        str(owned.get("id")) == str(card_id)
+        and str(owned.get("format", "")).casefold()
+        == str(card.get("format", "")).casefold()
+        for owned in owned_cards
+    )
+
+    try:
+        value = int(card.get("value", 0))
+    except (TypeError, ValueError):
+        value = 0
+
+    try:
+        balance = int(record.get("jnventory", 0))
+    except (TypeError, ValueError):
+        balance = 0
+
+    rarity = escape(str(card.get("rarity", "⚪ Common")))
+    name = escape(str(card.get("name", "Unknown")))
+    fmt = escape(str(card.get("format", "Unknown")))
+
+    #===== PURCHASE STATUS BUTTON =====
+    if card_id is None:
+        button = InlineKeyboardButton(
+            "❌ Invalid card ID",
+            callback_data="buypl:0:owned:0",
+        )
+    elif is_owned:
+        button = InlineKeyboardButton(
+            "✅ Already Owned",
+            callback_data=f"buypl:{user_id}:owned:{card_id}",
+        )
+    elif value > 0 and balance >= value:
+        button = InlineKeyboardButton(
+            "🛒 Buy",
+            callback_data=f"buypl:{user_id}:buy:{card_id}",
+        )
+    else:
+        button = InlineKeyboardButton(
+            "❌ Can't afford",
+            callback_data=f"buypl:{user_id}:poor:{card_id}",
+        )
+
+    keyboard = InlineKeyboardMarkup([[button]])
+
+    #===== PLAYER DETAILS =====
+    text = (
+        f"<b>📛 {name} ⭐</b>\n\n"
+        "<b>👤 Info:</b>\n\n"
+        f"📋 <b>Format:</b> {fmt}\n"
+        f"🧺 <b>Status:</b> {'Owned' if is_owned else 'Not owned'}\n"
+        f"🪒 <b>Rarity:</b> {rarity}\n"
+        f"💰 <b>Value:</b> {value:,}🪙\n\n"
+        "Tap below to purchase this card."
+    )
+
+    #===== SEND OR EDIT =====
+    query = getattr(update, "callback_query", None)
+
+    if query:
+        try:
+            await query.edit_message_text(
+                text,
+                reply_markup=keyboard,
+                parse_mode=ParseMode.HTML,
+            )
+        except BadRequest as error:
+            if "Message is not modified" not in str(error):
+                raise
+    else:
+        message = update.effective_message
+
+        if message:
+            await message.reply_text(
+                text,
+                reply_markup=keyboard,
+                parse_mode=ParseMode.HTML,
+            )

@@ -75,7 +75,7 @@ async def telegram_webhook(request: Request):
 
     try:
         payload = await request.json()
-        update = Update.de_json(payload, telegram_app)
+        update = Update.de_json(payload, telegram_app.bot)
 
         await telegram_app.initialize()
         try:

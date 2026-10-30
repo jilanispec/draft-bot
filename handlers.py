@@ -43,10 +43,13 @@ DATA_DIR = Path(
         str(Path(__file__).resolve().parent / "data")
     )
 )
+
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 USERS_FILE = DATA_DIR / "users.json"
 TEMP_USERS_FILE = DATA_DIR / "users.tmp"
+
+CARDS_FILE = DATA_DIR / "cards.json"
 
 
 #===== SUPABASE USER DATABASE =====

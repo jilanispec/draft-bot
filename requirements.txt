@@ -1,4 +1,4 @@
 python-telegram-bot>=21,<23
 fastapi>=0.115,<1
 tzdata
-supabase>=2,<3
+psycopg[binary]>=3.2,<4

@@ -793,17 +793,101 @@ async def send_buypl_card(update, context, card, user_id):
 #===== BET PATTERNS =====
 
 BET_PATTERNS = [
-    "HTHTHTH", "THTHTHT", "HHTTHHT", "TTHHTTH", "HHHTTTH",
-    "TTTHHHT", "HTTHHTT", "THHTTHH", "HHTHTTH", "TTHTHHT",
-    "HTHHTHT", "THTTHTH", "HHHHTTT", "TTTTHHH", "HTTTHHH",
-    "THHHTTT", "HHTTTHH", "TTHHHTT", "HTHTTHH", "THTHHTT",
-    "HHTHHTT", "TTHTTHH", "HTTHTHH", "THHTHTT", "HHHTHTT",
-    "TTTHTHH", "HTHHHTT", "THTTTHH", "HHTHTHT", "TTHTHTH",
-    "HTTTTHH", "THHHHTT", "HHTTHTH", "TTHHTHT", "HTHTTTH",
-    "THTHHHT", "HHHTHHT", "TTTHTTH", "HTHHTTH", "THTTHHT",
-    "HHTHTTT", "TTHTHHH", "HTTHHHT", "THHTTTH", "HHHHHTT",
-    "TTTTTHH", "HTHTHHT", "THTHTTH", "HHTTTTH", "TTHHHHT"
+    "HTHTHTHTHTHTHTH",  # 01
+    "THTHTHTHTHTHTHT",  # 02
+    "HHTTHHTTHHTTHHT",  # 03
+    "TTHHTTHHTTHHTTH",  # 04
+    "HHHTTTHHHTTTHHH",  # 05
+    "TTTHHHTTTHHHTTT",  # 06
+    "HTTHHTTHHTTHHTT",  # 07
+    "THHTTHHTTHHTTHH",  # 08
+    "HHTHTTHHTHTTHHT",  # 09
+    "TTHTHHTTHTHHTTH",  # 10
 ]
+
+
+#===== GLOBAL BOT PATTERN STATE =====
+
+BOT_BET_STATE_FILE = DATA_DIR / "bot_bet_state.json"
+BOT_BET_STATE_TEMP = DATA_DIR / "bot_bet_state.tmp"
+
+
+def new_bot_bet_state():
+    return {
+        "pattern": random.choice(BET_PATTERNS),
+        "position": 0,
+        "cycles_done": 0
+    }
+
+
+def load_bot_bet_state():
+    try:
+        with BOT_BET_STATE_FILE.open("r", encoding="utf-8") as file:
+            state = json.load(file)
+
+        pattern = state.get("pattern")
+        position = state.get("position")
+        cycles_done = state.get("cycles_done")
+
+        if (
+            pattern in BET_PATTERNS
+            and isinstance(position, int)
+            and not isinstance(position, bool)
+            and 0 <= position < 15
+            and isinstance(cycles_done, int)
+            and not isinstance(cycles_done, bool)
+            and 0 <= cycles_done <= 2
+        ):
+            return state
+
+    except (OSError, json.JSONDecodeError, AttributeError, TypeError):
+        pass
+
+    return new_bot_bet_state()
+
+
+def save_bot_bet_state(state):
+    with BOT_BET_STATE_TEMP.open("w", encoding="utf-8") as file:
+        json.dump(state, file, indent=4)
+        file.flush()
+        os.fsync(file.fileno())
+
+    BOT_BET_STATE_TEMP.replace(BOT_BET_STATE_FILE)
+
+
+def get_next_bot_bet_outcome(state):
+    pattern = state["pattern"]
+    position = state["position"]
+
+    outcome = pattern[position]
+    position += 1
+
+    if position < 15:
+        state["position"] = position
+        return outcome, state
+
+    # One complete 15-outcome cycle has finished
+    state["cycles_done"] += 1
+
+    if state["cycles_done"] == 1:
+        # After first cycle:
+        # 80% chance to repeat, 20% chance to break
+        repeat = random.random() < 0.80
+
+    elif state["cycles_done"] == 2:
+        # After second cycle:
+        # 20% chance for a third cycle, 80% chance to break
+        repeat = random.random() < 0.20
+
+    else:
+        repeat = False
+
+    if repeat:
+        state["position"] = 0
+    else:
+        state = new_bot_bet_state()
+
+    return outcome, state
 
 
 #===== BET COMMAND =====
@@ -847,9 +931,11 @@ async def bett_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if first in choices:
         choice = choices[first]
         amount_text = context.args[1]
+
     elif second in choices:
         choice = choices[second]
         amount_text = context.args[0]
+
     else:
         await message.reply_text(
             "❌ <b>Invalid choice!</b>\n"
@@ -862,6 +948,7 @@ async def bett_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         amount = int(amount_text)
+
     except ValueError:
         await message.reply_text(
             "❌ <b>Bet amount must be a whole number.</b>",
@@ -898,8 +985,6 @@ async def bett_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         record["bet_game_day"] = game_day
         record["bet_daily_count"] = 0
         record["bet_daily_earnings"] = 0
-        record["bet_pattern"] = random.choice(BET_PATTERNS)
-        record["bet_pattern_position"] = 0
 
     bet_count = int(record.get("bet_daily_count", 0))
     earnings = int(record.get("bet_daily_earnings", 0))
@@ -949,48 +1034,41 @@ async def bett_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    #===== GET PATTERN OUTCOME =====
+    #===== GET GLOBAL PATTERN OUTCOME =====
 
-    pattern = record.get("bet_pattern")
-    position = int(record.get("bet_pattern_position", 0))
+    global_state = load_bot_bet_state()
 
-    if not pattern or len(pattern) != 7 or not 0 <= position < 7:
-        pattern = random.choice(BET_PATTERNS)
-        position = 0
-
-    outcome = pattern[position]
-
-    #===== ADVANCE PATTERN =====
-
-    position += 1
-
-    if position >= 7:
-        record["bet_pattern"] = random.choice(BET_PATTERNS)
-        record["bet_pattern_position"] = 0
-    else:
-        record["bet_pattern"] = pattern
-        record["bet_pattern_position"] = position
+    outcome, updated_global_state = get_next_bot_bet_outcome(
+        global_state
+    )
 
     #===== CALCULATE RESULT =====
 
     bet_count += 1
 
     if choice == outcome:
-        # 2x total return: original stake plus equal net winnings.
+        # 2x total return: stake plus equal net winnings
         balance += amount
         earnings += amount
+
         result_line = f"🟢 <b>You won!</b> +{amount:,}🪙 🎉"
+
     else:
         balance -= amount
+
         result_line = f"🔴 <b>You lost!</b> -{amount:,}🪙 💸"
 
-    #===== SAVE RESULT =====
+    #===== SAVE USER RESULT =====
 
     record["jnventory"] = balance
     record["bet_daily_count"] = bet_count
     record["bet_daily_earnings"] = earnings
+
     users[user_id] = record
     save_users(users)
+
+    # Save shared pattern only after user data is saved
+    save_bot_bet_state(updated_global_state)
 
     #===== RESULT MESSAGE =====
 
@@ -1008,4 +1086,3 @@ async def bett_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🎯 Bets used today: <b>{bet_count}/30</b>",
         parse_mode=ParseMode.HTML
     )
-    

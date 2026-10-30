@@ -17,16 +17,18 @@ from telegram.error import BadRequest
 #===== TIMEZONE =====
 IST = ZoneInfo("Asia/Kolkata")
 
+#===== USER DATA FILES =====
 
-#===== DATA FILES =====
-BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
+DATA_DIR = Path(
+    os.environ.get(
+        "DATA_DIR",
+        str(Path(__file__).resolve().parent / "data")
+    )
+)
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-#===== CARD DATABASE =====
-CARDS_FILE = DATA_DIR / "cards.json"
-
-if not CARDS_FILE.exists():
-    CARDS_FILE = BASE_DIR / "cards.json"
+USERS_FILE = DATA_DIR / "users.json"
+TEMP_USERS_FILE = DATA_DIR / "users.tmp"
 
 
 #===== SUPABASE USER DATABASE =====

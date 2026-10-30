@@ -28,46 +28,149 @@ CARDS_FILE = DATA_DIR / "cards.json"
 if not CARDS_FILE.exists():
     CARDS_FILE = BASE_DIR / "cards.json"
 
-#===== USER DATA =====
-DATA_DIR = Path(
-    os.environ.get("DATA_DIR", str(Path(__file__).resolve().parent / "data"))
-)
-DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-USERS_FILE = DATA_DIR / "users.json"
-TEMP_USERS_FILE = DATA_DIR / "users.tmp"
+#===== SUPABASE USER DATABASE =====
+
+import psycopg
+from psycopg.types.json import Jsonb
 
 
-#===== LOAD USERS =====
-def load_users():
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL environment variable is missing.")
+
+
+def get_db_connection():
+    return psycopg.connect(
+        DATABASE_URL,
+        connect_timeout=10,
+        sslmode="require"
+    )
+
+
+def migrate_json_users():
+    """
+    Import existing users.json only when the Supabase table is empty.
+    Never overwrite existing Supabase records.
+    """
     if not USERS_FILE.exists():
-        return {}
+        return
 
     with USERS_FILE.open("r", encoding="utf-8") as file:
-        data = json.load(file)
+        local_users = json.load(file)
 
-    if not isinstance(data, dict):
-        raise ValueError("users.json must contain a JSON object")
+    if not isinstance(local_users, dict) or not local_users:
+        return
 
-    return data
-print("USERS FILE PATH:", USERS_FILE)
-print("USERS FILE EXISTS:", USERS_FILE.exists())
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM public.bot_users"
+            )
+            existing_count = cur.fetchone()[0]
 
-#===== SAVE USERS =====
+            if existing_count > 0:
+                print(
+                    "Supabase already contains users. "
+                    "Skipping JSON migration."
+                )
+                return
+
+            for user_id, record in local_users.items():
+                if not isinstance(record, dict):
+                    continue
+
+                cur.execute(
+                    """
+                    INSERT INTO public.bot_users
+                    (
+                        telegram_id,
+                        first_name,
+                        username,
+                        cards,
+                        total_packs,
+                        user_data
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (telegram_id) DO NOTHING
+                    """,
+                    (
+                        int(user_id),
+                        record.get("first_name"),
+                        record.get("username"),
+                        Jsonb(record.get("cards", [])),
+                        int(record.get("total_packs", 0)),
+                        Jsonb(record)
+                    )
+                )
+
+    print("JSON user migration completed.")
+
+
+def load_users():
+    # Migrate only if Supabase is empty
+    migrate_json_users()
+
+    users = {}
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT telegram_id, user_data
+                FROM public.bot_users
+                """
+            )
+
+            for telegram_id, user_data in cur.fetchall():
+                if isinstance(user_data, dict):
+                    users[str(telegram_id)] = user_data
+                else:
+                    users[str(telegram_id)] = {}
+
+    return users
+
+
 def save_users(users):
-    with TEMP_USERS_FILE.open("w", encoding="utf-8") as file:
-        json.dump(
-            users,
-            file,
-            indent=4,
-            ensure_ascii=False,
-        )
-        file.flush()
-
-    TEMP_USERS_FILE.replace(USERS_FILE)
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            for user_id, record in users.items():
+                cur.execute(
+                    """
+                    INSERT INTO public.bot_users
+                    (
+                        telegram_id,
+                        first_name,
+                        username,
+                        cards,
+                        total_packs,
+                        user_data,
+                        updated_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (telegram_id)
+                    DO UPDATE SET
+                        first_name = EXCLUDED.first_name,
+                        username = EXCLUDED.username,
+                        cards = EXCLUDED.cards,
+                        total_packs = EXCLUDED.total_packs,
+                        user_data = EXCLUDED.user_data,
+                        updated_at = NOW()
+                    """,
+                    (
+                        int(user_id),
+                        record.get("first_name"),
+                        record.get("username"),
+                        Jsonb(record.get("cards", [])),
+                        int(record.get("total_packs", 0)),
+                        Jsonb(record)
+                    )
+                )
 
 
 #===== GET USER RECORD =====
+
 def get_user_record(user):
     users = load_users()
     user_id = str(user.id)
@@ -84,6 +187,7 @@ def get_user_record(user):
             "claim_streak": 0,
             "last_bonus_streak": 0,
         }
+
     else:
         record = users[user_id]
         record["first_name"] = user.first_name
@@ -98,7 +202,7 @@ def get_user_record(user):
 
     save_users(users)
     return users[user_id]
-
+    
 
 #===== START COMMAND =====
 async def start_command(

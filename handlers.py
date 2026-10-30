@@ -17,6 +17,24 @@ from telegram.error import BadRequest
 #===== TIMEZONE =====
 IST = ZoneInfo("Asia/Kolkata")
 
+CARDS_FILE = DATA_DIR / "cards.json"
+
+import psycopg
+from psycopg.types.json import Jsonb
+
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL environment variable is missing.")
+
+def get_db_connection():
+    return psycopg.connect(
+        DATABASE_URL,
+        connect_timeout=10,
+        sslmode="require"
+    )
+
+
 #===== USER DATA FILES =====
 
 DATA_DIR = Path(

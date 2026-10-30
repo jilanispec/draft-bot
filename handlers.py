@@ -17,7 +17,6 @@ from telegram.error import BadRequest
 #===== TIMEZONE =====
 IST = ZoneInfo("Asia/Kolkata")
 
-CARDS_FILE = DATA_DIR / "cards.json"
 
 import psycopg
 from psycopg.types.json import Jsonb
